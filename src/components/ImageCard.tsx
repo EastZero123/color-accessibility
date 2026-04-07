@@ -44,7 +44,7 @@ function ElementRow({ el }: { el: ContrastElement }) {
   );
 }
 
-export function ImageCard({ result }: { result: AnalysisResult }) {
+export function ImageCard({ result, onImageClick }: { result: AnalysisResult; onImageClick?: () => void }) {
   const [expanded, setExpanded] = useState(true);
   const { filename, imageData, analysis } = result;
 
@@ -56,7 +56,14 @@ export function ImageCard({ result }: { result: AnalysisResult }) {
   return (
     <article className={`image-card${analysis?.overallPass ? ' image-card--pass' : analysis ? ' image-card--fail' : ' image-card--analyzing'}`}>
       <div className="image-card__header">
-        <div className="image-card__thumb-wrap">
+        <div
+          className="image-card__thumb-wrap"
+          onClick={onImageClick}
+          role="button"
+          tabIndex={0}
+          onKeyDown={(e) => e.key === 'Enter' && onImageClick?.()}
+          aria-label="이미지 확대 보기"
+        >
           <img src={imageData} alt={filename} className="image-card__thumb" />
         </div>
         <div className="image-card__overview">

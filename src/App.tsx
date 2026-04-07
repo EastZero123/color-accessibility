@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { DropZone } from './components/DropZone';
 import { ClipboardInput } from './components/ClipboardInput';
 import { ImageCard } from './components/ImageCard';
+import { ImageModal } from './components/ImageModal';
 import type { AnalysisResult, UploadStatus } from './types';
 import './App.css';
 
@@ -9,6 +10,10 @@ export default function App() {
   const [results, setResults] = useState<AnalysisResult[]>([]);
   const [status, setStatus] = useState<UploadStatus>('idle');
   const [error, setError] = useState<string | null>(null);
+  const [modalState, setModalState] = useState<{ isOpen: boolean; index: number }>({
+    isOpen: false,
+    index: 0,
+  });
 
   const handleFilesSelected = async (files: File[]) => {
     setStatus('uploading');
@@ -67,7 +72,6 @@ export default function App() {
     } catch (err) {
       setError(err instanceof Error ? err.message : '알 수 없는 오류가 발생했습니다.');
       setStatus('error');
-    } finally {
     }
   };
 
@@ -75,6 +79,28 @@ export default function App() {
     setResults([]);
     setStatus('idle');
     setError(null);
+  };
+
+  const handleImageClick = (index: number) => {
+    setModalState({ isOpen: true, index });
+  };
+
+  const handleModalClose = () => {
+    setModalState({ isOpen: false, index: 0 });
+  };
+
+  const handleModalPrevious = () => {
+    setModalState((prev) => ({
+      ...prev,
+      index: prev.index > 0 ? prev.index - 1 : results.length - 1,
+    }));
+  };
+
+  const handleModalNext = () => {
+    setModalState((prev) => ({
+      ...prev,
+      index: prev.index < results.length - 1 ? prev.index + 1 : 0,
+    }));
   };
 
   return (
@@ -152,10 +178,26 @@ export default function App() {
             </div>
             <div className="results-list">
               {results.map((result, i) => (
-                <ImageCard key={`${result.filename}-${i}`} result={result} />
+                <ImageCard
+                  key={`${result.filename}-${i}`}
+                  result={result}
+                  onImageClick={() => handleImageClick(i)}
+                />
               ))}
             </div>
           </section>
+        )}
+
+        {results.length > 0 && (
+          <ImageModal
+            result={results[modalState.index]}
+            isOpen={modalState.isOpen}
+            onClose={handleModalClose}
+            onPrevious={handleModalPrevious}
+            onNext={handleModalNext}
+            hasPrevious={results.length > 1}
+            hasNext={results.length > 1}
+          />
         )}
 
         {status === 'idle' && results.length === 0 && (
