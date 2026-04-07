@@ -1,0 +1,27 @@
+export type ElementType = 'normal_text' | 'large_text' | 'ui_component';
+
+export interface ContrastElement {
+  id: number;
+  description: string;
+  type: ElementType;
+  foregroundColor: string;
+  backgroundColor: string;
+  contrastRatio: number;
+  wcagAA: boolean;
+  wcagAAA: boolean;
+  location: string;
+}
+
+export interface ImageAnalysis {
+  summary: string;
+  overallPass: boolean;
+  elements: ContrastElement[];
+}
+
+export interface AnalysisResult {
+  filename: string;
+  imageData: string;
+  analysis?: ImageAnalysis;
+}
+
+export type UploadStatus = 'idle' | 'uploading' | 'done' | 'error';
