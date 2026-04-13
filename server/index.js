@@ -1,14 +1,14 @@
 import express from 'express';
 import cors from 'cors';
 import multer from 'multer';
-import Anthropic from '@anthropic-ai/sdk';
+import OpenAI from 'openai';
 import { config } from 'dotenv';
 import helmet from 'helmet';
 
 config();
 
-if (!process.env.ANTHROPIC_API_KEY) {
-  console.error('오류: ANTHROPIC_API_KEY 환경 변수가 설정되지 않았습니다. .env 파일을 확인해주세요.');
+if (!process.env.GITHUB_TOKEN) {
+  console.error('오류: GITHUB_TOKEN 환경 변수가 설정되지 않았습니다. .env 파일을 확인해주세요.');
   process.exit(1);
 }
 
@@ -17,6 +17,51 @@ const SUPPORTED_MEDIA_TYPES = new Set(['image/jpeg', 'image/png', 'image/gif', '
 const MEDIA_TYPE_MAP = {
   'image/jpg': 'image/jpeg',
 };
+
+// 색상 대비 계산 유틸리티 (서버 측 검증용)
+function hexToRgb(hex) {
+  if (!hex) return null;
+  const cleaned = hex.replace('#', '');
+  if (cleaned.length !== 6) return null;
+  const r = parseInt(cleaned.slice(0, 2), 16);
+  const g = parseInt(cleaned.slice(2, 4), 16);
+  const b = parseInt(cleaned.slice(4, 6), 16);
+  return { r, g, b };
+}
+
+function srgbToLinear(c) {
+  const s = c / 255;
+  return s <= 0.03928 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4);
+}
+
+function relativeLuminance({ r, g, b }) {
+  const rLin = srgbToLinear(r);
+  const gLin = srgbToLinear(g);
+  const bLin = srgbToLinear(b);
+  return { L: 0.2126 * rLin + 0.7152 * gLin + 0.0722 * bLin, rLin, gLin, bLin };
+}
+
+function computeContrastRatio(fgHex, bgHex) {
+  const fg = hexToRgb(fgHex);
+  const bg = hexToRgb(bgHex);
+  if (!fg || !bg) return null;
+  const fgLum = relativeLuminance(fg);
+  const bgLum = relativeLuminance(bg);
+  const L1 = Math.max(fgLum.L, bgLum.L);
+  const L2 = Math.min(fgLum.L, bgLum.L);
+  const ratio = (L1 + 0.05) / (L2 + 0.05);
+  return {
+    ratio: Math.round(ratio * 10) / 10,
+    foreground: { r: fg.r, g: fg.g, b: fg.b, r_lin: round(fgLum.rLin, 6), g_lin: round(fgLum.gLin, 6), b_lin: round(fgLum.bLin, 6), L: round(fgLum.L, 6) },
+    background: { r: bg.r, g: bg.g, b: bg.b, r_lin: round(bgLum.rLin, 6), g_lin: round(bgLum.gLin, 6), b_lin: round(bgLum.bLin, 6), L: round(bgLum.L, 6) },
+  };
+}
+
+function round(v, digits = 3) {
+  if (typeof v !== 'number') return v;
+  const m = Math.pow(10, digits);
+  return Math.round(v * m) / m;
+}
 
 // 간단한 메모리 기반 Rate Limiter (프로덕션에서는 Redis 사용 권장)
 const requestLimiter = new Map();
@@ -78,27 +123,37 @@ app.use(helmet({
 
 app.use(express.json({ limit: '1mb' })); // JSON 페이로드 크기 제한
 
-const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+// GitHub Models API 클라이언트 초기화
+const client = new OpenAI({
+  apiKey: process.env.GITHUB_TOKEN,
+  baseURL: 'https://models.inference.ai.azure.com',
+  defaultHeaders: {
+    'Authorization': `Bearer ${process.env.GITHUB_TOKEN}`,
+    'github-token': process.env.GITHUB_TOKEN,
+  },
+});
 
-// 최적화된 프롬프트 (토큰 소모 감소)
-const ANALYZE_PROMPT = `분석해야 할 핵심 정보만 JSON으로 반환하세요:
-{
-  "summary": "한국어 평가",
-  "overallPass": boolean,
-  "elements": [
-    {
-      "id": number,
-      "description": "요소 설명",
-      "type": "normal_text"|"large_text"|"ui_component",
-      "foregroundColor": "#HEX",
-      "backgroundColor": "#HEX",
-      "contrastRatio": number,
-      "wcagAA": boolean,
-      "wcagAAA": boolean,
-      "location": "위치"
-    }
-  ]
-}`;
+// 최적화된 프롬프트 (정밀한 명도대비 계산)
+// 오로지 텍스트와 주변 배경의 명도대비만 분석, 로고/아이콘/단순 UI컴포넌트는 무시
+const ANALYZE_PROMPT = "중요: 이미지를 분석할 때 오로지 텍스트(글자)와 그 주변 배경의 색상만을 극도로 정밀하게 추출하세요. 로고, 아이콘, 장식용 그래픽, 단순 UI 컴포넌트는 완전히 무시하십시오. 텍스트가 아닌 요소는 절대 분석 결과에 포함하지 마세요.\n\n" +
+  "가장 중요한 점: 텍스트의 전경색(글자색)과 글자 바로 뒤의 배경색을 정확한 6자리 HEX 코드(예: #3FA9F5, #FFFFFF)로 추출해야 합니다. 시각적으로 대충 비슷해 보이는 색(예: 파란색을 무조건 #0000FF로 적는 등)을 임의로 적지 말고,  이미지에 픽셀 단위로 렌더링된 실제 색상값을 최대한 정확히 반영하세요.\n\n" +
+  "반드시 WCAG의 공식 명도대비 계산식을 사용하여 수치적으로 계산해야 합니다. 모델 응답은 다음 절차를 정확히 따르십시오:\n" +
+  "1) 정확하게 추출한 전경색(foreground)과 배경색(background)을 6자리 HEX(예: #RRGGBB)로 표기합니다.\n" +
+  "2) HEX의 R,G,B 값을 0..255로 읽어 각각 s = component / 255 로 정규화합니다.\n" +
+  "3) 각 sRGB 성분을 linearize합니다:\n" +
+  "   if s <= 0.03928 then lin = s / 12.92 else lin = ((s + 0.055) / 1.055) ** 2.4\n" +
+  "4) 상대휘도(relative luminance) L을 계산합니다:\n" +
+  "   L = 0.2126 * R_lin + 0.7152 * G_lin + 0.0722 * B_lin\n" +
+  "5) 두 색상의 상대휘도 L1, L2를 결정(큰 값을 L1, 작은 값을 L2로 사용)하고,\n" +
+  "   contrast ratio = (L1 + 0.05) / (L2 + 0.05)\n" +
+  "6) contrast ratio는 소수점 한 자리까지 반올림하여 'contrastRatio'에 넣으세요 (예: 2.6, 9.3).\n\n" +
+  "응답 형식(정확히 이 JSON만 반환):\n" +
+  "{\n  \"summary\": \"한국어 평가\",\n  \"overallPass\": boolean,\n  \"elements\": [\n    {\n      \"id\": number,\n      \"description\": \"텍스트 내용 및 설명 (예: 헤드라인, 본문 등)\",\n      \"type\": \"normal_text\"|\"large_text\",\n      \"foregroundColor\": \"#HEX\",\n      \"backgroundColor\": \"#HEX\",\n      \"contrastRatio\": number,\n      \"calculation\": {\n        \"foreground\": { \"r\": number, \"g\": number, \"b\": number, \"r_lin\": number, \"g_lin\": number, \"b_lin\": number, \"L\": number },\n        \"background\": { \"r\": number, \"g\": number, \"b\": number, \"r_lin\": number, \"g_lin\": number, \"b_lin\": number, \"L\": number }\n      },\n      \"wcagAA\": boolean,\n      \"wcagAAA\": boolean,\n      \"location\": \"위치\"\n    }\n  ]\n}\n" +
+  "추가 지침:\n" +
+  "- [매우 중요] 'type'의 분류 기준: 두껍고 큰 제목(약 18pt 이상, 또는 14pt 볼드 상당)은 무조건 'large_text'로 분류하세요. 그 외의 작은 본문 텍스트는 'normal_text'로 분류해야 합니다.\n" +
+  "- 텍스트 색상(foregroundColor)과 배경색(backgroundColor) 추출의 정확도가 생명입니다. 대략적인 색상 이름을 기반으로 HEX를 유추하지 마세요.\n" +
+  "- 위의 수학적 절차로 정확하게 계산하세요.\n" +
+  "- 응답에는 오직 JSON만 포함되어야 하며, 부가 설명 텍스트는 포함하지 마세요.";
 
 // Rate Limiter 미들웨어
 app.use((req, res, next) => {
@@ -129,21 +184,24 @@ app.post('/api/analyze', upload.array('images', 5), async (req, res) => {
 
     for (const file of files) {
       try {
+        const originalname = Buffer.from(file.originalname, 'latin1').toString('utf8');
         const base64Image = file.buffer.toString('base64');
         const mediaType = MEDIA_TYPE_MAP[file.mimetype] ?? file.mimetype;
 
-        console.log(`[${new Date().toISOString()}] 분석 시작: ${file.originalname.slice(0, 50)}`);
+        console.log(`[${new Date().toISOString()}] 분석 시작: ${originalname.slice(0, 50)}`);
 
-        const response = await client.messages.create({
-          model: 'claude-3-5-sonnet-20241022',
-          max_tokens: 2048, // 4096 → 2048로 감소 (토큰 50% 절감)
+        const response = await client.chat.completions.create({
+          model: 'gpt-4o',
+          max_tokens: 2048,
           messages: [
             {
               role: 'user',
               content: [
                 {
-                  type: 'image',
-                  source: { type: 'base64', media_type: mediaType, data: base64Image },
+                  type: 'image_url',
+                  image_url: {
+                    url: `data:${mediaType};base64,${base64Image}`,
+                  },
                 },
                 { type: 'text', text: ANALYZE_PROMPT },
               ],
@@ -151,45 +209,88 @@ app.post('/api/analyze', upload.array('images', 5), async (req, res) => {
           ],
         });
 
-        const content = response.content[0];
-        if (content.type !== 'text') {
+        const content = response.choices[0]?.message?.content;
+        if (!content) {
           throw new Error('응답 형식 오류');
         }
 
         let analysis;
         try {
-          const jsonMatch = content.text.match(/\{[\s\S]*\}/);
-          analysis = JSON.parse(jsonMatch ? jsonMatch[0] : content.text);
+          const jsonMatch = content.match(/\{[\s\S]*\}/);
+          analysis = JSON.parse(jsonMatch ? jsonMatch[0] : content);
 
           // 응답 검증
           if (!analysis.summary || analysis.overallPass === undefined || !Array.isArray(analysis.elements)) {
             throw new Error('응답 구조 오류');
           }
+
+          // 서버 측에서 계산으로 검증 및 보정: model이 반환한 색상값이 있다면 WCAG 계산식을 사용해 정확한 contrast 값을 산출합니다.
+          try {
+            analysis.elements = analysis.elements.map((el, idx) => {
+              // 보수적으로 필드 존재 여부 확인
+              const fg = el.foregroundColor || el.fg || null;
+              const bg = el.backgroundColor || el.bg || null;
+              if (fg && bg) {
+                const comp = computeContrastRatio(String(fg).trim(), String(bg).trim());
+                if (comp) {
+                  el.contrastRatio = comp.ratio;
+                  el.calculation = comp;
+                  // WCAG 판정: large text의 threshold는 3.0(AA) / 4.5(AAA), normal text는 4.5(AA) / 7(AAA)
+                  const isLarge = el.type === 'large_text';
+                  el.wcagAA = isLarge ? comp.ratio >= 3.0 : comp.ratio >= 4.5;
+                  el.wcagAAA = isLarge ? comp.ratio >= 4.5 : comp.ratio >= 7.0;
+                }
+              } else {
+                // 색상값이 없으면 calculation 필드를 null로 두고 설명 유지
+                el.calculation = null;
+              }
+              el.id = el.id ?? idx + 1;
+              return el;
+            });
+
+            // overallPass 재계산: 모든 요소가 wcagAA 통과여야 true
+            analysis.overallPass = analysis.elements.every(e => e.wcagAA === true);
+          } catch (verifyError) {
+            console.warn('서버 측 계산 중 오류:', verifyError);
+          }
         } catch (parseError) {
-          console.warn(`파싱 실패: ${file.originalname.slice(0, 50)}`);
+          console.warn(`파싱 실패: ${originalname.slice(0, 50)}`);
           throw new Error('분석 결과 처리 오류');
         }
 
         results.push({
-          filename: file.originalname.slice(0, 255), // 파일명 길이 제한
+          filename: originalname.slice(0, 255), // 파일명 길이 제한
           imageData: `data:${mediaType};base64,${base64Image}`,
           analysis,
         });
 
-        console.log(`[${new Date().toISOString()}] 분석 완료: ${file.originalname.slice(0, 50)}`);
+        console.log(`[${new Date().toISOString()}] 분석 완료: ${originalname.slice(0, 50)}`);
       } catch (error) {
-        console.warn(`이미지 처리 실패: ${file.originalname.slice(0, 50)}`);
+        // file.originalname을 utf8로 변환하지 못한 경우 대비
+        const errorName = file ? Buffer.from(file.originalname, 'latin1').toString('utf8').slice(0, 50) : 'unknown';
+        console.error(`❌ 이미지 처리 실패: ${errorName}`);
+        console.error('에러 상세:', error);
+        if (error instanceof Error) {
+          console.error('- 메시지:', error.message);
+          console.error('- 스택:', error.stack);
+        }
         // 실패한 이미지는 건너뛰고 계속 진행
       }
     }
 
     if (results.length === 0) {
+      console.error('❌ 모든 이미지 분석 실패');
       return res.status(500).json({ error: '분석에 실패했습니다. 다시 시도해주세요.' });
     }
 
+    console.log(`✅ 분석 완료: ${results.length}개 이미지 성공`);
     res.json({ results, count: results.length });
   } catch (error) {
-    console.error('[ERROR]', error instanceof Error ? error.message : '알 수 없는 오류');
+    console.error('[FATAL ERROR]', error);
+    if (error instanceof Error) {
+      console.error('- 메시지:', error.message);
+      console.error('- 스택:', error.stack);
+    }
     // 에러 메시지에 민감한 정보 노출 방지
     const statusCode = error?.status === 429 ? 429 : 500;
     res.status(statusCode).json({ error: '서비스 처리 중 오류가 발생했습니다.' });
@@ -201,7 +302,17 @@ app.get('/health', (_req, res) => {
   res.json({ status: 'ok' });
 });
 
+// 비동기 예외 및 종료 원인 추적
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught Exception:', err);
+});
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled Rejection:', reason);
+});
+
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
   console.log(`[${new Date().toISOString()}] 서버 실행: http://localhost:${PORT}`);
 });
+
+console.log('서버 코드 끝까지 실행됨');

@@ -11,6 +11,7 @@ export default defineConfig({
         changeOrigin: true,
         timeout: 300000, // 5분 타임아웃
         proxyTimeout: 300000,
+        rewrite: (path) => path
       },
     },
   },

@@ -57,12 +57,12 @@ export default function App() {
       }
 
       const data = await response.json();
-      
+
       // 분석 결과를 받으면 해당 이미지 업데이트
       setResults((prev) => {
         return prev.map((result) => {
           const analysisResult = data.results.find(
-            (r: AnalysisResult) => r.filename === result.filename
+            (r: AnalysisResult) => r.filename === result.filename || r.filename.startsWith(result.filename.slice(0, 100))
           );
           return analysisResult ? { ...result, analysis: analysisResult.analysis } : result;
         });

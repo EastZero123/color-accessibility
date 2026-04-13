@@ -40,7 +40,7 @@ export function ClipboardInput({ onImagesSelected, disabled }: ClipboardInputPro
               {
                 id: timestamp,
                 dataUrl,
-                fileName: `clipboard_${new Date().toLocaleTimeString('ko-KR', { hour12: false })}.png`,
+                fileName: `clipboard_${timestamp}.png`,
               },
             ]);
           };
@@ -165,4 +165,3 @@ export function ClipboardInput({ onImagesSelected, disabled }: ClipboardInputPro
     </div>
   );
 }
-
