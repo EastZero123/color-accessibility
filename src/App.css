@@ -683,45 +683,29 @@
   margin: 0;
 }
 
-.clipboard-input__area {
+.clipboard-input__field {
+  width: 100%;
   border: 2px dashed var(--color-border);
   border-radius: var(--radius-md);
   background: var(--color-surface-2);
   padding: 16px;
-  min-height: 120px;
+  font-size: 14px;
+  color: var(--color-text);
   transition: border-color 0.2s, background 0.2s;
   outline: none;
   cursor: text;
+  text-align: center;
 }
 
-.clipboard-input__area:focus-visible {
+.clipboard-input__field:focus,
+.clipboard-input__field:focus-visible {
   border-color: var(--color-accent);
   background: rgba(129, 140, 248, 0.04);
 }
 
-.clipboard-input__area--disabled {
+.clipboard-input__field--disabled {
   opacity: 0.5;
   cursor: not-allowed;
-}
-
-.clipboard-input__placeholder {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 8px;
-  color: var(--color-text-muted);
-  pointer-events: none;
-}
-
-.clipboard-input__placeholder svg {
-  width: 32px;
-  height: 32px;
-  opacity: 0.6;
-}
-
-.clipboard-input__placeholder p {
-  font-size: 13px;
-  margin: 0;
 }
 
 .clipboard-input__previews {
