@@ -11,8 +11,7 @@ export function DropZone({ onFilesSelected, disabled }: DropZoneProps) {
 
   const handleFiles = useCallback(
     (files: File[]) => {
-      const images = files.filter((f) => f.type.startsWith('image/'));
-      if (images.length > 0) onFilesSelected(images);
+      onFilesSelected(files);
     },
     [onFilesSelected]
   );
@@ -64,7 +63,7 @@ export function DropZone({ onFilesSelected, disabled }: DropZoneProps) {
       <input
         ref={inputRef}
         type="file"
-        accept="image/*"
+        accept="image/png, image/jpeg, image/jpg, image/webp"
         multiple
         onChange={handleChange}
         disabled={disabled}
@@ -79,7 +78,7 @@ export function DropZone({ onFilesSelected, disabled }: DropZoneProps) {
           </svg>
         </div>
         <p className="dropzone__title">이미지를 드래그하거나 클릭하여 업로드</p>
-        <p className="dropzone__subtitle">PNG, JPG, WebP, GIF 지원 · 여러 파일 동시 업로드 가능</p>
+        <p className="dropzone__subtitle">PNG, JPG, WebP 지원 · 여러 파일 동시 업로드 가능</p>
       </div>
     </div>
   );

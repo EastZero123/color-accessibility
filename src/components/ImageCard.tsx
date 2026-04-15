@@ -4,11 +4,17 @@ import type { AnalysisResult, ContrastElement } from '../types';
 function ColorPair({ fg, bg }: { fg: string; bg: string }) {
   return (
     <div className="color-pair">
-      <span className="color-swatch" style={{ background: fg }} title={fg} />
+      <div className="color-pair__item">
+        <span className="color-swatch" style={{ background: fg }} title={fg} />
+        <span className="color-code">{fg}</span>
+      </div>
       <svg className="color-pair__arrow" viewBox="0 0 16 16" fill="currentColor">
         <path d="M8 1l7 7-7 7M1 8h14" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" fill="none"/>
       </svg>
-      <span className="color-swatch" style={{ background: bg }} title={bg} />
+      <div className="color-pair__item">
+        <span className="color-swatch" style={{ background: bg }} title={bg} />
+        <span className="color-code">{bg}</span>
+      </div>
     </div>
   );
 }
@@ -49,12 +55,13 @@ export function ImageCard({ result, onImageClick }: { result: AnalysisResult; on
   const { filename, imageData, analysis } = result;
 
   // analysis가 없으면 분석 중 상태
-  const isAnalyzing = !analysis;
+  const isAnalyzing = result.status === 'analyzing' || (!analysis && result.status !== 'error');
+  const isError = result.status === 'error';
   const passCount = analysis?.elements.filter((e) => e.wcagAA).length ?? 0;
   const failCount = analysis?.elements.filter((e) => !e.wcagAA).length ?? 0;
 
   return (
-    <article className={`image-card${analysis?.overallPass ? ' image-card--pass' : analysis ? ' image-card--fail' : ' image-card--analyzing'}`}>
+    <article className={`image-card${analysis?.overallPass ? ' image-card--pass' : (isError ? ' image-card--fail' : (analysis ? ' image-card--fail' : ' image-card--analyzing'))}`}>
       <div className="image-card__header">
         <div
           className="image-card__thumb-wrap"
@@ -74,13 +81,18 @@ export function ImageCard({ result, onImageClick }: { result: AnalysisResult; on
                 분석 중...
               </span>
             )}
-            {!isAnalyzing && (
+            {isError && (
+              <span className="overall-pill overall-pill--fail">
+                분석 실패
+              </span>
+            )}
+            {!isAnalyzing && !isError && analysis && (
               <span className={`overall-pill${analysis.overallPass ? ' overall-pill--pass' : ' overall-pill--fail'}`}>
                 {analysis.overallPass ? '✓ WCAG AA 통과' : '✗ WCAG AA 미충족'}
               </span>
             )}
           </div>
-          {!isAnalyzing && (
+          {!isAnalyzing && !isError && analysis && (
             <>
               <p className="image-card__summary">{analysis.summary}</p>
               <div className="image-card__stats">
@@ -96,10 +108,15 @@ export function ImageCard({ result, onImageClick }: { result: AnalysisResult; on
               <span>분석 결과를 기다리는 중입니다...</span>
             </div>
           )}
+          {isError && (
+            <div className="image-card__error" style={{ color: 'var(--red-600)', marginTop: '8px' }}>
+              <span>❌ 이미지 분석에 실패했습니다.</span>
+            </div>
+          )}
         </div>
       </div>
 
-      {!isAnalyzing && analysis.elements.length > 0 && (
+      {!isAnalyzing && !isError && analysis && analysis.elements.length > 0 && (
         <>
           <button
             className="elements-toggle"

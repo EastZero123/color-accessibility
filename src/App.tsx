@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { DropZone } from './components/DropZone';
 import { ClipboardInput } from './components/ClipboardInput';
 import { ImageCard } from './components/ImageCard';
@@ -14,27 +14,39 @@ export default function App() {
     isOpen: false,
     index: 0,
   });
+  const [queue, setQueue] = useState<File[]>([]);
+  const [isProcessing, setIsProcessing] = useState(false);
 
-  const handleFilesSelected = async (files: File[]) => {
+  // 대기열 처리 로직
+  useEffect(() => {
+    if (queue.length > 0 && !isProcessing) {
+      processQueue();
+    }
+  }, [queue, isProcessing]);
+
+  const processQueue = async () => {
+    setIsProcessing(true);
     setStatus('uploading');
-    setError(null);
 
-    // 먼저 이미지 미리보기 생성 (분석 결과 없이)
-    const fileReaders = files.map((file) => {
-      return new Promise<{ filename: string; imageData: string }>((resolve) => {
-        const reader = new FileReader();
-        reader.onload = (e) => {
-          resolve({
-            filename: file.name,
-            imageData: e.target?.result as string,
-          });
-        };
-        reader.readAsDataURL(file);
-      });
-    });
+    const filesToProcess = [...queue];
+    setQueue([]); // 큐 비우기
 
     try {
-      // 이미지 미리보기를 먼저 UI에 추가
+      // 1. 선택 즉시 '분석대기중(analyzing)' 상태로 UI 업데이트
+      const fileReaders = filesToProcess.map((file) => {
+        return new Promise<{ filename: string; imageData: string; status: 'analyzing' }>((resolve) => {
+          const reader = new FileReader();
+          reader.onload = (e) => {
+            resolve({
+              filename: file.name,
+              imageData: e.target?.result as string,
+              status: 'analyzing'
+            });
+          };
+          reader.readAsDataURL(file);
+        });
+      });
+
       const previews = await Promise.all(fileReaders);
       const initialResults: AnalysisResult[] = previews.map((p) => ({
         ...p,
@@ -42,9 +54,9 @@ export default function App() {
       }));
       setResults((prev) => [...initialResults, ...prev]);
 
-      // 분석 요청
+      // 하나씩 또는 일괄 분석
       const formData = new FormData();
-      files.forEach((file) => formData.append('images', file));
+      filesToProcess.forEach((file) => formData.append('images', file));
 
       const response = await fetch('/api/analyze', {
         method: 'POST',
@@ -58,20 +70,52 @@ export default function App() {
 
       const data = await response.json();
 
-      // 분석 결과를 받으면 해당 이미지 업데이트
       setResults((prev) => {
         return prev.map((result) => {
+          // filesToProcess 안에 포함된 이미지들에 대해서만 처리
+          const isProcessedHere = filesToProcess.some(f => f.name === result.filename);
+          if (!isProcessedHere) return result;
+
           const analysisResult = data.results.find(
             (r: AnalysisResult) => r.filename === result.filename || r.filename.startsWith(result.filename.slice(0, 100))
           );
-          return analysisResult ? { ...result, analysis: analysisResult.analysis } : result;
+          if (analysisResult) {
+            return { ...result, analysis: analysisResult.analysis, status: 'done' as const };
+          }
+          // 분석은 됐는데 결과가 안 왔다면 error 처리
+          return { ...result, status: 'error' as const };
         });
       });
 
+      // 큐(대기열)와 관계없이 현재 배치 처리가 끝났으므로 done 처리
+      // 진행할 항목이 더 있다면 useEffect에서 다시 queue 길이 확인 후 uploading 상태로 만듦
       setStatus('done');
     } catch (err) {
       setError(err instanceof Error ? err.message : '알 수 없는 오류가 발생했습니다.');
+      
+      // 에러 발생 시 현재 분석 중이었던 목록을 error 상태로 변경
+      setResults((prev) => 
+        prev.map(r => filesToProcess.some(f => f.name === r.filename) ? { ...r, status: 'error' as const } : r)
+      );
+
       setStatus('error');
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  const handleFilesSelected = (files: File[]) => {
+    // 파일 확장자 필터링 (PNG, JPG, WebP)
+    const validExtensions = ['image/png', 'image/jpeg', 'image/jpg', 'image/webp'];
+    const validFiles = files.filter(f => validExtensions.includes(f.type));
+
+    if (validFiles.length !== files.length) {
+      setError('PNG, JPG, WebP 형식의 파일만 업로드할 수 있습니다.');
+    }
+
+    if (validFiles.length > 0) {
+      setQueue((prev) => [...prev, ...validFiles]);
+      setError(null);
     }
   };
 
@@ -79,6 +123,8 @@ export default function App() {
     setResults([]);
     setStatus('idle');
     setError(null);
+    setQueue([]);
+    setIsProcessing(false);
   };
 
   const handleImageClick = (index: number) => {
@@ -141,12 +187,12 @@ export default function App() {
         <section className="upload-section">
           <DropZone
             onFilesSelected={handleFilesSelected}
-            disabled={status === 'uploading'}
+            disabled={false} // 분석 중에도 업로드 가능하도록 활성화
           />
 
           <ClipboardInput
             onImagesSelected={handleFilesSelected}
-            disabled={status === 'uploading'}
+            disabled={false}
           />
 
           {status === 'uploading' && (

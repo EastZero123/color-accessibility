@@ -22,6 +22,7 @@ export interface AnalysisResult {
   filename: string;
   imageData: string;
   analysis?: ImageAnalysis;
+  status?: 'queued' | 'analyzing' | 'done' | 'error';
 }
 
 export type UploadStatus = 'idle' | 'uploading' | 'done' | 'error';

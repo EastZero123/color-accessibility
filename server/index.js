@@ -4,6 +4,7 @@ import multer from 'multer';
 import OpenAI from 'openai';
 import { config } from 'dotenv';
 import helmet from 'helmet';
+import sharp from 'sharp';
 
 config();
 
@@ -180,111 +181,117 @@ app.post('/api/analyze', upload.array('images', 5), async (req, res) => {
     res.setHeader('X-Content-Type-Options', 'nosniff'); // XSS 방지
 
     // 순차 처리로 토큰 사용량 제어 (병렬 처리는 비용 증가)
-    const results = [];
-
-    for (const file of files) {
-      try {
-        const originalname = Buffer.from(file.originalname, 'latin1').toString('utf8');
-        const base64Image = file.buffer.toString('base64');
-        const mediaType = MEDIA_TYPE_MAP[file.mimetype] ?? file.mimetype;
-
-        console.log(`[${new Date().toISOString()}] 분석 시작: ${originalname.slice(0, 50)}`);
-
-        const response = await client.chat.completions.create({
-          model: 'gpt-4o',
-          max_tokens: 2048,
-          messages: [
-            {
-              role: 'user',
-              content: [
-                {
-                  type: 'image_url',
-                  image_url: {
-                    url: `data:${mediaType};base64,${base64Image}`,
-                  },
-                },
-                { type: 'text', text: ANALYZE_PROMPT },
-              ],
-            },
-          ],
-        });
-
-        const content = response.choices[0]?.message?.content;
-        if (!content) {
-          throw new Error('응답 형식 오류');
-        }
-
-        let analysis;
+    const results = await Promise.all(
+      files.map(async (file) => {
         try {
-          const jsonMatch = content.match(/\{[\s\S]*\}/);
-          analysis = JSON.parse(jsonMatch ? jsonMatch[0] : content);
+          const originalname = Buffer.from(file.originalname, 'latin1').toString('utf8');
 
-          // 응답 검증
-          if (!analysis.summary || analysis.overallPass === undefined || !Array.isArray(analysis.elements)) {
-            throw new Error('응답 구조 오류');
+          // 1) Sharp를 이용한 이미지 전처리 (원본 색상 보존: normalize 제거, 손실 압축 제거 후 png 사용)
+          const processedBuffer = await sharp(file.buffer)
+            .flatten({ background: { r: 255, g: 255, b: 255 } }) // 투명 배경을 흰색으로 변경
+            .png()
+            .toBuffer();
+
+          const base64Image = processedBuffer.toString('base64');
+          const mediaType = 'image/png';
+
+          console.log(`[${new Date().toISOString()}] 분석 시작 (전처리 완료): ${originalname.slice(0, 50)}`);
+
+          const response = await client.chat.completions.create({
+            model: 'gpt-4o',
+            max_tokens: 2048,
+            temperature: 0.1, // 환각 오류 최소화 및 일관성 확보
+            messages: [
+              {
+                role: 'user',
+                content: [
+                  {
+                    type: 'image_url',
+                    image_url: {
+                      url: `data:${mediaType};base64,${base64Image}`,
+                      detail: 'high' // 고해상도 타일링 분석 강제
+                    },
+                  },
+                  { type: 'text', text: ANALYZE_PROMPT },
+                ],
+              },
+            ],
+          });
+
+          const content = response.choices[0]?.message?.content;
+          if (!content) {
+            throw new Error('응답 형식 오류');
           }
 
-          // 서버 측에서 계산으로 검증 및 보정: model이 반환한 색상값이 있다면 WCAG 계산식을 사용해 정확한 contrast 값을 산출합니다.
+          let analysis;
           try {
-            analysis.elements = analysis.elements.map((el, idx) => {
-              // 보수적으로 필드 존재 여부 확인
-              const fg = el.foregroundColor || el.fg || null;
-              const bg = el.backgroundColor || el.bg || null;
-              if (fg && bg) {
-                const comp = computeContrastRatio(String(fg).trim(), String(bg).trim());
-                if (comp) {
-                  el.contrastRatio = comp.ratio;
-                  el.calculation = comp;
-                  // WCAG 판정: large text / ui_component의 threshold는 3.0(AA) / 4.5(AAA), normal text는 4.5(AA) / 7(AAA)
-                  const isLargeOrUI = el.type === 'large_text' || el.type === 'ui_component';
-                  el.wcagAA = isLargeOrUI ? comp.ratio >= 3.0 : comp.ratio >= 4.5;
-                  el.wcagAAA = isLargeOrUI ? comp.ratio >= 4.5 : comp.ratio >= 7.0;
+            const jsonMatch = content.match(/\{[\s\S]*\}/);
+            analysis = JSON.parse(jsonMatch ? jsonMatch[0] : content);
+
+            // 응답 검증
+            if (!analysis.summary || analysis.overallPass === undefined || !Array.isArray(analysis.elements)) {
+              throw new Error('응답 구조 오류');
+            }
+
+            // 서버 측에서 계산으로 검증 및 보정
+            try {
+              analysis.elements = analysis.elements.map((el, idx) => {
+                const fg = el.foregroundColor || el.fg || null;
+                const bg = el.backgroundColor || el.bg || null;
+                if (fg && bg) {
+                  const comp = computeContrastRatio(String(fg).trim(), String(bg).trim());
+                  if (comp) {
+                    el.contrastRatio = comp.ratio;
+                    el.calculation = comp;
+                    const is14pxOrMore = el.fontSize !== undefined ? el.fontSize >= 14 : false;
+                    const isLargeOrUI = is14pxOrMore || el.type === 'large_text' || el.type === 'ui_component';
+                    el.wcagAA = isLargeOrUI ? comp.ratio >= 3.0 : comp.ratio >= 4.5;
+                    el.wcagAAA = isLargeOrUI ? comp.ratio >= 4.5 : comp.ratio >= 7.0;
+                  }
+                } else {
+                  el.calculation = null;
                 }
-              } else {
-                // 색상값이 없으면 calculation 필드를 null로 두고 설명 유지
-                el.calculation = null;
-              }
-              el.id = el.id ?? idx + 1;
-              return el;
-            });
+                el.id = el.id ?? idx + 1;
+                return el;
+              });
 
-            // overallPass 재계산: 모든 요소가 wcagAA 통과여야 true
-            analysis.overallPass = analysis.elements.every(e => e.wcagAA === true);
-          } catch (verifyError) {
-            console.warn('서버 측 계산 중 오류:', verifyError);
+              analysis.overallPass = analysis.elements.every(e => e.wcagAA === true);
+            } catch (verifyError) {
+              console.warn('서버 측 계산 중 오류:', verifyError);
+            }
+          } catch (parseError) {
+            console.warn(`파싱 실패: ${originalname.slice(0, 50)}`);
+            throw new Error('분석 결과 처리 오류');
           }
-        } catch (parseError) {
-          console.warn(`파싱 실패: ${originalname.slice(0, 50)}`);
-          throw new Error('분석 결과 처리 오류');
+
+          console.log(`[${new Date().toISOString()}] 분석 완료: ${originalname.slice(0, 50)}`);
+          return {
+            filename: originalname.slice(0, 255), // 파일명 길이 제한
+            imageData: `data:${mediaType};base64,${base64Image}`,
+            analysis,
+          };
+        } catch (error) {
+          const errorName = file ? Buffer.from(file.originalname, 'latin1').toString('utf8').slice(0, 50) : 'unknown';
+          console.error(`❌ 이미지 처리 실패: ${errorName}`);
+          console.error('에러 상세:', error);
+          if (error instanceof Error) {
+            console.error('- 메시지:', error.message);
+            console.error('- 스택:', error.stack);
+          }
+          return null; // 에러 발생한 항목은 null 반환
         }
+      })
+    );
 
-        results.push({
-          filename: originalname.slice(0, 255), // 파일명 길이 제한
-          imageData: `data:${mediaType};base64,${base64Image}`,
-          analysis,
-        });
+    const validResults = results.filter(r => r !== null);
 
-        console.log(`[${new Date().toISOString()}] 분석 완료: ${originalname.slice(0, 50)}`);
-      } catch (error) {
-        // file.originalname을 utf8로 변환하지 못한 경우 대비
-        const errorName = file ? Buffer.from(file.originalname, 'latin1').toString('utf8').slice(0, 50) : 'unknown';
-        console.error(`❌ 이미지 처리 실패: ${errorName}`);
-        console.error('에러 상세:', error);
-        if (error instanceof Error) {
-          console.error('- 메시지:', error.message);
-          console.error('- 스택:', error.stack);
-        }
-        // 실패한 이미지는 건너뛰고 계속 진행
-      }
-    }
-
-    if (results.length === 0) {
+    if (validResults.length === 0) {
       console.error('❌ 모든 이미지 분석 실패');
       return res.status(500).json({ error: '분석에 실패했습니다. 다시 시도해주세요.' });
     }
 
-    console.log(`✅ 분석 완료: ${results.length}개 이미지 성공`);
-    res.json({ results, count: results.length });
+    console.log(`✅ 분석 완료: ${validResults.length}개 이미지 성공`);
+    res.json({ results: validResults, count: validResults.length });
   } catch (error) {
     console.error('[FATAL ERROR]', error);
     if (error instanceof Error) {

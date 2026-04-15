@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { AnalysisResult } from '../types';
+import { recommendColor } from '../utils/colorUtils';
 
 // 명도 계산 유틸리티 함수들
 function hexToRgb(hex: string) {
@@ -73,9 +74,17 @@ export function ImageModal({
 
   const manualContrast = (fgColor && bgColor) ? getContrastRatio(fgColor, bgColor).toFixed(2) : null;
 
+  const typeLabel: Record<string, string> = {
+    normal_text: '일반 텍스트',
+    large_text: '큰 텍스트',
+    ui_component: 'UI 컴포넌트',
+  };
+
   // ESC 키로 닫기
   useEffect(() => {
     if (!isOpen) return;
+
+    document.body.style.overflow = 'hidden';
 
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
@@ -88,7 +97,10 @@ export function ImageModal({
     };
 
     window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
+    return () => {
+      document.body.style.overflow = '';
+      window.removeEventListener('keydown', handleKeyDown);
+    };
   }, [isOpen, onClose, onPrevious, onNext, hasPrevious, hasNext]);
 
   if (!isOpen) {
@@ -123,6 +135,59 @@ export function ImageModal({
             <p className="image-modal__status">
               {result.analysis.overallPass ? '✓ WCAG AA 통과' : '✗ WCAG AA 미충족'}
             </p>
+          )}
+
+          {result.analysis && result.analysis.elements.length > 0 && (
+            <div className="modal-elements-list">
+              <h3>감지된 요소 상세</h3>
+              <div className="modal-elements-grid">
+                {result.analysis.elements.map((el, i) => {
+                  const targetRatio = (el.type === 'large_text' || el.type === 'ui_component') ? 3.0 : 4.5;
+                  const isFail = !el.wcagAA;
+                  const recommendedFg = isFail ? recommendColor(el.foregroundColor, el.backgroundColor, targetRatio) : null;
+
+                  return (
+                    <div key={i} className={`modal-element-card${isFail ? ' modal-element-card--fail' : ''}`}>
+                      <div className="modal-element-card__header">
+                        <div className="modal-element-card__colors">
+                          <div className="color-pair__item">
+                            <span className="color-swatch" style={{ backgroundColor: el.foregroundColor }} title={`전경색: ${el.foregroundColor}`} />
+                            <span className="color-code">{el.foregroundColor}</span>
+                          </div>
+                          <svg viewBox="0 0 16 16" fill="currentColor" width="12" height="12"><path d="M8 1l7 7-7 7M1 8h14" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" fill="none"/></svg>
+                          <div className="color-pair__item">
+                            <span className="color-swatch" style={{ backgroundColor: el.backgroundColor }} title={`배경색: ${el.backgroundColor}`} />
+                            <span className="color-code">{el.backgroundColor}</span>
+                          </div>
+                        </div>
+                        <div className="modal-element-card__ratio">
+                          <strong className={isFail ? 'fail-text' : 'pass-text'}>{el.contrastRatio.toFixed(2)} : 1</strong>
+                        </div>
+                      </div>
+                      <div className="modal-element-card__body">
+                        <div className="modal-element-card__desc">{el.description}</div>
+                        <div className="modal-element-card__meta">
+                          <span className="modal-element-card__type">{typeLabel[el.type] || el.type}</span>
+                          <span className="modal-element-card__loc">{el.location}</span>
+                        </div>
+                      </div>
+
+                      {isFail && recommendedFg && (
+                        <div className="modal-element-card__ai-recommend">
+                          <div className="ai-recommend-title">✨ AI 명도 추천 (목표 {targetRatio}:1)</div>
+                          <div className="ai-colors">
+                            <div className="ai-color-item">
+                              <span className="color-swatch" style={{ backgroundColor: recommendedFg }} />
+                              <span>추천: {recommendedFg.toUpperCase()}</span>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
           )}
 
           <div className="manual-check">
