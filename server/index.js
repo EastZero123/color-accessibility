@@ -5,8 +5,13 @@ import OpenAI from 'openai';
 import { config } from 'dotenv';
 import helmet from 'helmet';
 import sharp from 'sharp';
+import path from 'path';
+import { fileURLToPath } from 'url';
 
 config();
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 if (!process.env.GITHUB_TOKEN) {
   console.error('오류: GITHUB_TOKEN 환경 변수가 설정되지 않았습니다. .env 파일을 확인해주세요.');
@@ -118,6 +123,8 @@ app.use(helmet({
   contentSecurityPolicy: {
     directives: {
       defaultSrc: ["'self'"],
+      imgSrc: ["'self'", "data:", "blob:"],
+      connectSrc: ["'self'", "https:", "http:"],
     },
   },
 }));
@@ -307,6 +314,15 @@ app.post('/api/analyze', upload.array('images', 5), async (req, res) => {
 // Health check endpoint
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok' });
+});
+
+// 정적 파일 서빙 (프로덕션 환경: 프론트엔드 빌드 파일)
+const distPath = path.join(__dirname, '../dist');
+app.use(express.static(distPath));
+
+// 그 외 모든 경로는 프론트엔드의 index.html을 반환하도록 설정 (SPA 라우팅 지원)
+app.get('*', (req, res) => {
+  res.sendFile(path.join(distPath, 'index.html'));
 });
 
 // 비동기 예외 및 종료 원인 추적
